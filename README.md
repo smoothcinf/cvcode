@@ -1,1 +1,1 @@
-A couple of examples of betting related code are shared in this repository.
+A couple of betting related codes are shared in this repository.

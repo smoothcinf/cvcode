@@ -1,3 +1,7 @@
+"""
+THIS FILE CONSISTS OF SCRAPERS RELEVANT FOR SWEDISH HORSE RACING
+"""
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 import time

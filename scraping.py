@@ -7,6 +7,8 @@ from selenium.webdriver.common.by import By
 import time
 import pandas as pd
 import requests
+import asyncio
+import websockets
 
 
 def atg_api_scraper(
@@ -360,6 +362,135 @@ def bet365_scraper(
     else:
         print("Om du vill skrapa både H2H odds och H3H odds, gör detta genom att calla funktionen två gånger.")
         driver.quit()
+
+        
+async def getidsdata(uri, sportid=36):
+    ws = await websockets.connect(uri)
+    try:
+        await ws.send(
+            json.dumps(
+                {"jsonrpc": "2.0", "params": {"ids": [f"{sportid}"]}, "method": "GetLeaguesBySportId", "meta": {
+                    "blockId": "html-container-Center_LeagueListResponsiveBlock_16322"}, "id": "383b30bc-ed3e-423f-b172-1e8abf2737fb"}
+            )
+        )
+        result = await ws.recv()
+        close_ws = await ws.close()
+        result_dict = json.loads(result)
+        return result_dict
+
+    except:
+        raise Exception("async getidsdata-funktionen kunde inte hämta datan")
+
+
+async def getoddsdata(uri, id):
+    ws = await websockets.connect(uri)
+    try:
+        await ws.send(
+            json.dumps(
+                {"jsonrpc": "2.0", "params": {"eventState": "Mixed", "eventTypes": ["Outright"], "pagination": {"top": 100, "skip": 0}, "ids": [f"{id}"]}, "method": "GetEventsByLeagueId", "meta": {
+                    "blockId": "outRights-html-container-Center_LeagueViewResponsiveBlock_15984Center_LeagueViewResponsiveBlock_15984"}, "id": "734712ee-314b-4351-ba6f-3026aa1e24f2"}
+            )
+        )
+        result = await ws.recv()
+        close_ws = await ws.close()
+        result_dict = json.loads(result)
+        return result_dict
+
+    except:
+        raise Exception(
+            f"async getodds-funktionen kunde inte hämta datan för id {id}")
+
+
+def ss_getids(
+    uri: str,
+    bana: str,
+    från_lopp: int,
+    till_lopp: int,
+) -> list:
+    """
+    Genererar ID'n för samtliga lopp/event av intresse
+    """
+    try:
+        data = asyncio.run(getidsdata(uri, 36))
+
+        id_list = []
+    # for i in range(från_lopp, till_lopp + 1):
+        for spelobjekt in data['result']['leagues']:
+            if bana in spelobjekt['name']:  # and i in spelobjekt['name']:
+                id_list.append(spelobjekt['id'])
+        if id_list:
+            return id_list
+        else:
+            print(
+                "Inga marknads-id'n kunde hittas för givna parametrar, None returneras från ss_getids")
+            return None
+
+    except Exception as e:
+        print("Fel uppstod i samband med hämtning av ID'n i ss_getids, None returneras")
+        print("MER INFO:", e, type(e), "Line:", e.__traceback__.tb_lineno)
+        return None
+
+
+def ss_ws_scraper(
+    uri: str,
+    id_list: list,
+    marknader: list,
+) -> list:
+    """
+    Skrapar marknadsinfo för ett givet id från en tävlingsdag.
+
+    :param: str url: WebSocket url
+    :param: list id_list: lista av id/objid
+    :param: list marknader: Vilka marknader av ["Vinnare", "Placering", "H2H", ...] ska skrapas?
+
+    :rtype: pd.DataFrame
+    """
+    assert id_list, "id_list är en tom lista, finns ingen data att hämta"
+    if marknader == ["Vinnare", "Topp 3"]:
+        # Initierar en lista som ska innehålla dataframes för samtliga lopp
+        pd_lista = []
+
+        for objid in id_list:
+            # Skapar en tom dataframe för loppet
+            lopp_df = pd.DataFrame(columns=["Häst", "VOdds", "POdds"])
+
+            try:
+                # Genererar all relevant oddsdata för
+                data = asyncio.run(getoddsdata(uri, int(objid)))
+                for market in data['result']['markets']:
+                    if "Vinnare" in market['name']:
+                        Vselections = market['selections']
+
+                    if "Topp 3" in market['name']:
+                        Pselections = market['selections']
+
+                for Vdata in Vselections:
+                    hästnamn = Vdata['name']
+                    vodds = round(Vdata['trueOdds'], 2)
+                    for Pdata in Pselections:
+                        if hästnamn == Pdata['name'][3:]:
+                            podds = round(Pdata['trueOdds'], 2)
+                            break
+
+                    dummy_df = lopp_df
+                    ny_rad = pd.DataFrame(
+                        [[hästnamn, vodds, podds]], columns=lopp_df.columns)
+                    lopp_df = pd.concat(
+                        [dummy_df, ny_rad], ignore_index=True)
+
+            except Exception as e:
+                print(
+                    "Fel uppstod i samband med hämtning av odds för ID {ids} i ss_ws_scraper")
+                print("MER INFO:", e, type(e), "Line:",
+                      e.__traceback__.tb_lineno)
+
+            # När allt är färdigt läggs dataframen för loppet till pd_lista
+            pd_lista.append(lopp_df)
+
+        return pd_lista
+
+    if marknader == ["H2H"]:
+        pass
 
 
 def svenskaspel_scraper(

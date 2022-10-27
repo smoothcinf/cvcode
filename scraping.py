@@ -379,15 +379,15 @@ async def getidsdata(uri, sportid=36):
         return result_dict
 
     except:
-        raise Exception("async getidsdata-funktionen kunde inte hämta datan")
+        raise Exception("async getidsdata-funktionen kunde inte hämta id-data")
 
 
-async def getoddsdata(uri, id):
+async def getoddsdata(uri, id_):
     ws = await websockets.connect(uri)
     try:
         await ws.send(
             json.dumps(
-                {"jsonrpc": "2.0", "params": {"eventState": "Mixed", "eventTypes": ["Outright"], "pagination": {"top": 100, "skip": 0}, "ids": [f"{id}"]}, "method": "GetEventsByLeagueId", "meta": {
+                {"jsonrpc": "2.0", "params": {"eventState": "Mixed", "eventTypes": ["Outright"], "pagination": {"top": 100, "skip": 0}, "ids": [f"{id_}"]}, "method": "GetEventsByLeagueId", "meta": {
                     "blockId": "outRights-html-container-Center_LeagueViewResponsiveBlock_15984Center_LeagueViewResponsiveBlock_15984"}, "id": "734712ee-314b-4351-ba6f-3026aa1e24f2"}
             )
         )
@@ -398,7 +398,7 @@ async def getoddsdata(uri, id):
 
     except:
         raise Exception(
-            f"async getodds-funktionen kunde inte hämta datan för id {id}")
+            f"async getodds-funktionen kunde inte hämta datan för id {id_}")
 
 
 def ss_getids(
@@ -409,26 +409,36 @@ def ss_getids(
 ) -> list:
     """
     Genererar ID'n för samtliga lopp/event av intresse
+
+    Sätt från_lopp och till_lopp till tomma strings om ex.vis Elitloppet/PDA ska skrapas
     """
     try:
         data = asyncio.run(getidsdata(uri, 36))
 
         id_list = []
-    # for i in range(från_lopp, till_lopp + 1):
-        for spelobjekt in data['result']['leagues']:
-            if bana in spelobjekt['name']:  # and i in spelobjekt['name']:
-                id_list.append(spelobjekt['id'])
+        if isinstance(från_lopp, int):
+            for i in range(från_lopp, till_lopp + 1):
+                # Denna loop säkerställer att loppen tas i rätt ordning
+                for spelobjekt in data['result']['leagues']:
+                    if bana in spelobjekt['name'] and str(i) in spelobjekt['name']:
+                        # Om bannamnet plus loppnumret finns med i namnet för objektet har vi hittat rätt lopp
+                        id_list.append(spelobjekt['id'])
+                        break
+        else:
+            for spelobjekt in data['result']['leagues']:
+                if bana in spelobjekt['name']:
+                    id_list.append(spelobjekt['id'])
+                    break
+
         if id_list:
             return id_list
         else:
-            print(
-                "Inga marknads-id'n kunde hittas för givna parametrar, None returneras från ss_getids")
-            return None
+            raise Exception(
+                "Inga marknads-id'n kunde hittas för givna parametrar")
 
     except Exception as e:
-        print("Fel uppstod i samband med hämtning av ID'n i ss_getids, None returneras")
-        print("MER INFO:", e, type(e), "Line:", e.__traceback__.tb_lineno)
-        return None
+        print("Fel uppstod i samband med hämtning av ID'n i ss_getids")
+        print("MER INFO:", e.args, type(e))
 
 
 def ss_ws_scraper(
@@ -452,45 +462,56 @@ def ss_ws_scraper(
 
         for objid in id_list:
             # Skapar en tom dataframe för loppet
-            lopp_df = pd.DataFrame(columns=["Häst", "VOdds", "POdds"])
+            lopp_df = pd.DataFrame(
+                columns=["Startnr", "Häst", "VOdds", "POdds"])
 
             try:
-                # Genererar all relevant oddsdata för
+                # Genererar all relevant oddsdata för loppet
+                # Raden nedan tar 0.4-0.5 sek, skulle kunna optimeras genom att hämta all data för
+                # alla id'n på en gång, men resterande del av koden blir krångligare
                 data = asyncio.run(getoddsdata(uri, int(objid)))
+
                 for market in data['result']['markets']:
                     if "Vinnare" in market['name']:
-                        Vselections = market['selections']
+                        v_selections = market['selections']
 
                     if "Topp 3" in market['name']:
-                        Pselections = market['selections']
+                        p_selections = market['selections']
 
-                for Vdata in Vselections:
-                    hästnamn = Vdata['name']
-                    vodds = round(Vdata['trueOdds'], 2)
-                    for Pdata in Pselections:
-                        if hästnamn == Pdata['name'][3:]:
-                            podds = round(Pdata['trueOdds'], 2)
+                for v_data in v_selections:
+                    # Ifall startnummer inte finns (t.ex. Elitloppet) sätts alla till 0
+                    try:
+                        startnummer = int(v_data['name'].split(" ")[0])
+                    except:
+                        startnummer = 0
+                    hästnamn = v_data['name']
+                    vodds = round(v_data['trueOdds'], 2)
+                    for p_data in p_selections:
+                        if hästnamn == p_data['name'][3:]:
+                            podds = round(p_data['trueOdds'], 2)
                             break
 
                     dummy_df = lopp_df
                     ny_rad = pd.DataFrame(
-                        [[hästnamn, vodds, podds]], columns=lopp_df.columns)
+                        [[startnummer, hästnamn, vodds, podds]], columns=lopp_df.columns)
                     lopp_df = pd.concat(
                         [dummy_df, ny_rad], ignore_index=True)
 
             except Exception as e:
                 print(
-                    "Fel uppstod i samband med hämtning av odds för ID {ids} i ss_ws_scraper")
-                print("MER INFO:", e, type(e), "Line:",
-                      e.__traceback__.tb_lineno)
+                    "Fel uppstod i samband med hämtning av odds för ID {objid} i ss_ws_scraper")
+                print("MER INFO:", e.args, type(e))
 
-            # När allt är färdigt läggs dataframen för loppet till pd_lista
-            pd_lista.append(lopp_df)
+            # När allt är färdigt sorteras dataframen efter startnummer,
+            # sedan läggs dataframen för loppet till pd_lista
+            sorted_df = lopp_df.sort_values(by="Startnr")
+            pd_lista.append(sorted_df)
 
         return pd_lista
 
-    if marknader == ["H2H"]:
-        pass
+    else:
+        print(
+            "För närvarande är SS-scrapern [websockets] endast kompatibel med ['Vinnare', 'Topp 3']")
 
 
 def svenskaspel_scraper(
